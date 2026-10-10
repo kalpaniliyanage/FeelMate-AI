@@ -1,15 +1,16 @@
 
 import os
+import asyncio
+from google import genai
 from io import BytesIO
 from typing import Literal
-
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from PIL import Image, UnidentifiedImageError
 from google import genai
-from google.genai import types
+
 
 from emotion_model import predict_expression
 from recommendations import get_recommendations
@@ -53,12 +54,12 @@ YOUR MAIN JOB:
 - Offer 1-3 realistic, gentle, practical next steps relevant to their situation.
 - When helpful, ask one natural follow-up question.
 - Remember and use the recent conversation history.
-- If the user asks for advice, give advice related to their actual circumstances.
+- Give advice related to the user's actual circumstances.
 - Never assume facts the user has not told you.
 - Avoid repetitive generic responses such as "Everything will be okay."
-- Sound like a kind, respectful, non-judgmental person, not a scripted chatbot.
+- Sound kind, respectful, and non-judgmental.
 - Keep replies concise but meaningful, usually 3-6 sentences.
-- Match the language requested by the user.
+- Match the requested language.
 
 LANGUAGE:
 - If language is "si", respond naturally in Sinhala script.
@@ -67,10 +68,11 @@ LANGUAGE:
 
 WELLBEING AND SAFETY:
 - You are a supportive wellness companion, not a doctor or therapist.
-- Do not diagnose mental health conditions or claim certainty about someone's feelings.
+- Do not diagnose mental health conditions.
 - Do not shame, judge, pressure, or manipulate the user.
-- If the user indicates immediate danger or possible self-harm, respond with empathy,
-  encourage them to contact a trusted person and local emergency/crisis support now.
+- If the user indicates immediate danger or possible self-harm,
+  respond with empathy and encourage them to contact a trusted person
+  and local emergency/crisis support now.
 - Never present yourself as a replacement for professional help.
 - Respect privacy and do not ask for unnecessary identifying information.
 """
@@ -157,10 +159,11 @@ async def chat(request: ChatRequest):
             detail="Please enter a message.",
         )
 
-    # Keep only recent messages to maintain useful context.
+    # Keep only the latest messages for conversation context.
     recent_history = request.history[-8:]
 
     transcript = []
+
     for item in recent_history:
         role = "User" if item.role == "user" else "FeelMate"
         safe_content = item.content[:3000]
@@ -183,39 +186,67 @@ Recent conversation:
 User's latest message:
 {user_message}
 
-Respond directly to the user's actual situation. Do not give a generic,
-prewritten mood response. Use the conversation history when relevant.
+Respond directly to the user's actual situation.
+Use the conversation history when relevant.
+Do not give a generic, prewritten mood response.
 """
 
+    
     try:
         client = genai.Client(api_key=api_key)
+        response = None
 
-        
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.75,
-                max_output_tokens=700,
-            ),
-        )
+        for attempt in range(3):
+            try:
+                response = client.interactions.create(
+                    model="gemini-3.8-flash",
+                    input=prompt,
+                    system_instruction=SYSTEM_PROMPT,
+                    generation_config={
+                        "thinking_level": "low",
+                    },
+                )
+                break
 
-        reply = (response.text or "").strip()
+            except Exception as exc:
+                error_text = str(exc)
+
+                temporary_error = (
+                    "503" in error_text
+                    or "UNAVAILABLE" in error_text
+                    or "429" in error_text
+                    or "RESOURCE_EXHAUSTED" in error_text
+                )
+
+                if temporary_error and attempt < 2:
+                    wait_seconds = 2 ** (attempt + 1)
+                    print(
+                        f"Gemini temporarily unavailable. "
+                        f"Retrying in {wait_seconds}s..."
+                    )
+                    await asyncio.sleep(wait_seconds)
+                else:
+                    raise
+
+        if response is None:
+            raise RuntimeError("Gemini returned no response.")
+
+        reply = (response.output_text or "").strip()
 
         if not reply:
-            raise ValueError("The AI returned an empty response.")
+            raise RuntimeError("Gemini returned an empty response.")
 
         return {"reply": reply}
 
     except HTTPException:
         raise
+
     except Exception as exc:
         print("AI chat error:", repr(exc))
         raise HTTPException(
             status_code=502,
             detail=(
                 "FeelMate could not get an AI response. "
-                "Check the API key, internet connection, and backend logs."
+                "Check the Gemini model, API key, and API access."
             ),
         ) 

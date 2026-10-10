@@ -10,7 +10,7 @@ const moodOptions = [
     name: "Happy",
     emoji: "😊",
     image:
-      "https://i.pinimg.com/736x/78/2e/20/782e200017ad244f41d1fd772e6c4cc8.jpg",
+      "https://i.pinimg.com/1200x/82/67/1e/82671e098cd17af6ddabeee0510ae632.jpg",
   },
   {
     name: "Sad",
